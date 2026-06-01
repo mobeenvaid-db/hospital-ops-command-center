@@ -1,0 +1,73 @@
+# ═══════════════════════════════════════════════════════════════════
+# Capacity Command (Realtime) — Databricks App configuration TEMPLATE
+#
+# Copy to app.yaml and fill in the placeholders for YOUR workspace.
+# Nothing here is workspace-specific until you set it.
+#
+# Auth: OAuth via the app's service principal (auto-injected by the platform)
+# DB:   Lakebase (managed Postgres) wired via the `database` resource
+# LLM:  Foundation Model API wired via the `serving-endpoint` resource
+# Data: Redox ADT/FHIR over the /api/ingest/redox webhook (no simulator)
+# ═══════════════════════════════════════════════════════════════════
+
+command:
+  - "uvicorn"
+  - "serve:app"
+  - "--host"
+  - "0.0.0.0"
+  - "--port"
+  - "8000"
+
+resources:
+  - name: database
+    type: database
+    description: "Lakebase instance for hospital ops serving tables"
+  - name: serving-endpoint
+    type: serving-endpoint
+    description: "Foundation Model API for the Capacity Copilot"
+
+env:
+  # ── Lakebase (serving layer) ──
+  # PGHOST is wired from the database resource. The rest MUST be explicit.
+  - name: PGHOST
+    valueFrom: database
+  - name: PGPORT
+    value: "5432"
+  - name: PGDATABASE
+    value: "hospital_ops"
+  - name: PGUSER
+    value: "<APP_SERVICE_PRINCIPAL_UUID>"   # the app's SP id (see app details page)
+  - name: LAKEBASE_SCHEMA
+    value: "hospital_ops_lakebase"
+
+  # ── Foundation Model API ──
+  - name: SERVING_ENDPOINT
+    value: "databricks-claude-sonnet-4-5"
+
+  # ── Mode ──
+  - name: ENABLE_SIMULATION
+    value: "false"                          # realtime; set "true" only for the synthetic demo
+  - name: SITE_NAME
+    value: "General Hospital"
+
+  # ── Redox ingestion ──
+  - name: REQUIRE_INGEST_AUTH
+    value: "true"
+  - name: REDOX_VERIFICATION_TOKEN
+    valueFrom: redox-verification-token      # store as an app secret, don't inline
+  - name: REDOX_SIGNATURE_SECRET
+    valueFrom: redox-signature-secret        # optional HMAC; store as an app secret
+  - name: AUTO_CREATE_BEDS
+    value: "false"                           # "true" if you don't pre-seed a bed master
+  - name: LOCATION_MAP_PATH
+    value: "config/location_map.yaml"
+
+  # ── Bronze raw landing (Delta) ──
+  - name: BRONZE_SINK
+    value: "delta"                           # "delta" | "local" | "none"
+  - name: DELTA_CATALOG
+    value: "<YOUR_CATALOG>"
+  - name: DELTA_BRONZE_SCHEMA
+    value: "hospital_ops_bronze"
+  - name: WAREHOUSE_ID
+    value: "<YOUR_SQL_WAREHOUSE_ID>"         # used for bronze inserts

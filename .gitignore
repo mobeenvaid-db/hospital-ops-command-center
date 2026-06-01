@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Local config / secrets
+.env
+app/app.yaml
+config/departments.yaml
+config/location_map.yaml
+
+# Local bronze landing + scratch
+/tmp/redox_bronze.ndjson
+*.ndjson
+
+# Databricks / MLflow scratch
+.databricks/
+mlruns/
+mlflow.db
+
+# OS
+.DS_Store

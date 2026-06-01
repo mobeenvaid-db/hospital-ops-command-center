@@ -1,0 +1,28 @@
+{
+  "Meta": {
+    "DataModel": "PatientAdmin",
+    "EventType": "Admit",
+    "EventDateTime": "2026-06-01T15:20:00.000Z",
+    "Source": { "ID": "src-1", "Name": "General Hospital EHR" },
+    "Message": { "ID": "1002" }
+  },
+  "Patient": {
+    "Identifiers": [{ "ID": "0000001234", "IDType": "MR" }],
+    "Demographics": {
+      "FirstName": "Maria",
+      "LastName": "Alvarez",
+      "DOB": "1958-03-22",
+      "Sex": "Female"
+    }
+  },
+  "Visit": {
+    "VisitNumber": "V-90011",
+    "PatientClass": "Inpatient",
+    "AcuityLevel": 2,
+    "Location": {
+      "Type": "Inpatient",
+      "Facility": "General Hospital",
+      "Department": "ICU"
+    }
+  }
+}

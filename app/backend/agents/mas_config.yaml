@@ -1,0 +1,141 @@
+# Multi-Agent Supervisor (MAS) Configuration
+#
+# Defines 4 specialized LangGraph agents and routing rules for the
+# Capacity Command hospital ops dashboard. The supervisor uses FMAPI
+# Claude Sonnet for intent detection to route user queries to the
+# appropriate agent(s).
+
+# ── LLM for intent detection ────────────────────────────────────────────
+intent_detection:
+  # Uses FMAPI via OpenAI-compatible SDK (same as AssistantAgent)
+  # SERVING_ENDPOINT and workspace host resolved at runtime from config.py
+  model: "${SERVING_ENDPOINT}"
+  temperature: 0.0
+  max_tokens: 256
+
+# ── Agent definitions ───────────────────────────────────────────────────
+agents:
+  bed_capacity_planner:
+    class: agents.bed_capacity_planner.BedCapacityPlanner
+    description: >
+      Analyzes bed capacity across departments. Computes gap analysis
+      between available beds and forecast arrivals, identifies CRITICAL
+      and WARNING departments, and recommends capacity actions.
+    capabilities:
+      - bed occupancy analysis
+      - capacity gap calculation
+      - department-level risk assessment
+      - discharge-driven capacity projections
+    run_params:
+      dept_filter: null  # optional, extracted from query
+
+  or_utilization_optimizer:
+    class: agents.or_utilization_optimizer.ORUtilizationOptimizer
+    description: >
+      Optimizes operating room utilization. Analyzes OR schedule for
+      gaps, overruns, and turnover inefficiencies. Produces suggestions
+      to improve room usage toward target utilization.
+    capabilities:
+      - OR schedule analysis
+      - utilization gap detection
+      - overrun and delay alerts
+      - room-by-room optimization suggestions
+    run_params:
+      target_date: null
+      rooms_total: 8
+      target_utilization_pct: 85.0
+
+  discharge_coordinator:
+    class: agents.discharge_coordinator.DischargeCoordinator
+    description: >
+      Coordinates patient discharges by prioritizing candidates based
+      on readiness signals, LACE readmission risk, and time-of-day
+      staffing patterns. Flags high-risk discharges needing follow-up.
+    capabilities:
+      - discharge candidate ranking
+      - LACE readmission risk warnings
+      - staffing suggestions per department
+      - discharge volume forecasting
+    run_params:
+      dept_filter: null
+      top_n: 10
+
+  anomaly_pattern_detector:
+    class: agents.anomaly_pattern_detector.AnomalyPatternDetector
+    description: >
+      Detects recurring anomaly patterns across departments. Identifies
+      escalation chains (warning -> critical), cross-department
+      correlations, and hotspots requiring intervention.
+    capabilities:
+      - recurring pattern detection
+      - escalation chain analysis
+      - cross-department correlation
+      - hotspot identification
+    run_params:
+      lookback_hours: 4
+      recurrence_threshold: 2
+
+# ── Routing rules ───────────────────────────────────────────────────────
+# Keyword-based fast routing (checked before LLM intent detection).
+# If no keyword match, the LLM classifies intent from the query.
+routing:
+  keyword_rules:
+    - keywords: ["bed", "beds", "capacity", "occupancy", "census", "available beds", "gap"]
+      agent: bed_capacity_planner
+
+    - keywords: ["operating room", "surgery", "surgical", "utilization", "turnover", "overrun", "procedure", "case schedule"]
+      agent: or_utilization_optimizer
+
+    - keywords: ["discharg", "send home", "go home", "readmission"]
+      agent: discharge_coordinator
+
+    - keywords: ["anomaly", "anomalies", "alert", "alerts", "pattern", "escalation", "hotspot", "surge", "unusual"]
+      agent: anomaly_pattern_detector
+
+  # Case-sensitive keywords — matched against original query (not lowercased)
+  # to distinguish "OR" (operating room) from the conjunction "or"
+  case_sensitive_keywords:
+    - keywords: ["OR"]
+      agent: or_utilization_optimizer
+    - keywords: ["LACE"]
+      agent: discharge_coordinator
+
+  # When LLM is needed for ambiguous queries
+  llm_classification_prompt: |
+    You are a hospital operations query router. Given a user question,
+    classify which specialist agent should handle it.
+
+    Agents:
+    - bed_capacity_planner: bed census, capacity gaps, occupancy, available beds
+    - or_utilization_optimizer: OR schedule, surgery cases, utilization, turnover, overruns
+    - discharge_coordinator: discharge planning, LACE risk, readmission, sending patients home
+    - anomaly_pattern_detector: anomalies, alerts, escalations, unusual patterns, surges
+
+    If the query spans multiple domains, return multiple agents.
+    If the query is a general status overview, return ALL agents.
+
+    Respond with ONLY a JSON object:
+    {"agents": ["agent_name_1"], "params": {"dept_filter": "ICU"}}
+
+    The params field is optional. Extract department names or other
+    filters from the query when present.
+
+  # Queries that trigger all agents for a combined view
+  multi_agent_triggers:
+    - "status"
+    - "overview"
+    - "situation report"
+    - "sitrep"
+    - "shift summary"
+    - "how are we doing"
+    - "what's happening"
+    - "full picture"
+
+# ── Response aggregation ────────────────────────────────────────────────
+aggregation:
+  # When multiple agents run, combine their results
+  strategy: merge  # merge | sequential | parallel_summary
+  # Include system-level status rollup across all agents
+  include_system_status: true
+  # Max agents that can run in parallel
+  max_parallel: 4

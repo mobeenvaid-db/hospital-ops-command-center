@@ -1,0 +1,31 @@
+{
+  "resourceType": "Bundle",
+  "type": "message",
+  "entry": [
+    {
+      "fullUrl": "urn:uuid:enc-2001",
+      "resource": {
+        "resourceType": "Encounter",
+        "id": "enc-2001",
+        "status": "discharged",
+        "class": [
+          { "coding": [{ "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode", "code": "IMP" }] }
+        ],
+        "subject": { "reference": "Patient/pat-3001" },
+        "identifier": [{ "system": "urn:oid:visit", "value": "V-77042" }],
+        "period": { "start": "2026-06-01T16:05:00Z", "end": "2026-06-04T10:30:00Z" }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:pat-3001",
+      "resource": {
+        "resourceType": "Patient",
+        "id": "pat-3001",
+        "identifier": [{ "type": { "coding": [{ "code": "MR" }] }, "value": "0000007788" }],
+        "name": [{ "family": "Okafor", "given": ["James"] }],
+        "gender": "male",
+        "birthDate": "1949-11-02"
+      }
+    }
+  ]
+}
