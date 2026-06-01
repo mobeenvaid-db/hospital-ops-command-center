@@ -1,89 +1,110 @@
-"""
-Simulation lifecycle control routes.
+"""Lifecycle control routes.
 
-Provides API endpoints for controlling simulation lifecycle via Databricks Jobs API:
-- GET /api/lifecycle/status - Get current simulation state
-- POST /api/lifecycle/start - Start simulation if not running
-- POST /api/lifecycle/stop - Stop running simulation
-- POST /api/lifecycle/seed - 3-step orchestration: stop → seed → restart
+Dual-mode:
+
+  • Simulation mode (ENABLE_SIMULATION=true AND SEED_JOB_ID/SIMULATE_JOB_ID set):
+    drives the original Databricks seed/simulate Jobs.
+
+  • Realtime mode (default): there is no simulator. "Seed & Start" instead loads
+    a realistic census through the real ingestion applier (see ingest.demo_seed),
+    so the demo dashboard can be populated without a live Redox feed. Status is
+    derived from data freshness. start/stop are no-ops that report realtime mode.
+
+Always mounted, so the prebuilt frontend's controls never hit an unmounted route.
 """
 
 import asyncio
 import os
 import time
-from datetime import datetime, UTC
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from config import get_workspace_client
+from config import ENABLE_SIMULATION, SCHEMA
 from db import get_db
-
 
 router = APIRouter(prefix="/api/lifecycle", tags=["lifecycle"])
 
-# Job IDs from environment variables (set in app.yaml)
-# Fallback to job name lookup if env vars not set
 SEED_JOB_ID = os.environ.get("SEED_JOB_ID")
 SIMULATE_JOB_ID = os.environ.get("SIMULATE_JOB_ID")
-
-# Legacy: job names for lookup if IDs not provided
 SEED_JOB_NAME = "capacity-command-seed"
 SIMULATE_JOB_NAME = "capacity-command-simulate"
-
-# Polling configuration
 SEED_POLL_INTERVAL_SEC = 5
-SEED_TIMEOUT_SEC = 300  # 5 minutes
+SEED_TIMEOUT_SEC = 300
+
+# Data is considered "live" if the last applied event is within this window.
+FRESH_WINDOW_SEC = 120
 
 
-class SimulationStatus:
-    """Current simulation state."""
-
-    def __init__(
-        self,
-        is_running: bool,
-        run_id: Optional[int] = None,
-        state: Optional[str] = None,
-        sim_clock: Optional[str] = None,
-        staleness_seconds: Optional[int] = None,
-        cycle: Optional[int] = None,
-    ):
-        self.is_running = is_running
-        self.run_id = run_id
-        self.state = state
-        self.sim_clock = sim_clock
-        self.staleness_seconds = staleness_seconds
-        self.cycle = cycle
+def _jobs_mode() -> bool:
+    return bool(ENABLE_SIMULATION and SEED_JOB_ID and SIMULATE_JOB_ID)
 
 
-async def _get_job_id(job_name: str, job_id_env: Optional[str] = None) -> Optional[int]:
-    """
-    Get job ID by name or from environment variable.
+async def _staleness_seconds(conn) -> Optional[float]:
+    if conn is None:
+        return None
+    try:
+        val = await conn.fetchval(
+            f"SELECT EXTRACT(EPOCH FROM (now() - clock)) FROM {SCHEMA}.snapshot_meta WHERE id = 1"
+        )
+        return float(val) if val is not None else None
+    except Exception:
+        return None
 
-    If job_id_env is provided and set, use it directly (avoids permission issues).
-    Otherwise, fall back to looking up by name.
-    """
-    # Use hardcoded ID from env var if available
+
+# ── Realtime (default) handlers ─────────────────────────────────────────
+
+async def _realtime_status(conn):
+    staleness = await _staleness_seconds(conn)
+    is_running = staleness is not None and staleness < FRESH_WINDOW_SEC
+    return {
+        "is_running": is_running,
+        "run_id": None,
+        "state": "RUNNING" if is_running else "PAUSED",
+        "staleness_seconds": int(staleness) if staleness is not None else None,
+        "mode": "realtime",
+        "message": "Live data from ingestion" if is_running
+                   else "No recent events — click Seed & Start to load demo data, or connect a Redox feed",
+    }
+
+
+async def _realtime_seed(conn):
+    if conn is None:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    from ingest.demo_seed import seed_demo
+    from ingest.location_map import LocationMap
+    summary = await seed_demo(conn, SCHEMA, LocationMap.load())
+    return {
+        "success": True,
+        "mode": "realtime",
+        "message": f"Loaded demo census: {summary['patients_admitted']} inpatients, "
+                   f"{summary['ed_waiting']} in the ED",
+        "seed_run_id": None,
+        "simulate_run_id": None,
+        **summary,
+    }
+
+
+# ── Jobs (simulation) helpers — original behavior ───────────────────────
+
+async def _get_job_id(job_name, job_id_env):
     if job_id_env:
         try:
             return int(job_id_env)
         except (ValueError, TypeError):
             pass
-
-    # Fallback: lookup by name (requires SP to have permission to view jobs)
+    from config import get_workspace_client
     w = get_workspace_client()
-    jobs = w.jobs.list(name=job_name)
-    for job in jobs:
+    for job in w.jobs.list(name=job_name):
         if job.settings and job.settings.name == job_name:
             return job.job_id
     return None
 
 
-async def _get_active_run(job_id: int) -> Optional[dict]:
-    """Get active run for a job (PENDING or RUNNING state)."""
+async def _get_active_run(job_id):
+    from config import get_workspace_client
     w = get_workspace_client()
-    runs = w.jobs.list_runs(job_id=job_id, active_only=True, limit=1)
-    for run in runs:
+    for run in w.jobs.list_runs(job_id=job_id, active_only=True, limit=1):
         return {
             "run_id": run.run_id,
             "state": run.state.life_cycle_state.value if run.state and run.state.life_cycle_state else None,
@@ -92,198 +113,86 @@ async def _get_active_run(job_id: int) -> Optional[dict]:
     return None
 
 
-async def _get_snapshot_staleness(conn) -> Optional[int]:
-    """Get staleness in seconds from snapshot_meta.clock."""
-    if conn is None:
-        return None
-    try:
-        row = await conn.fetchrow(
-            "SELECT clock FROM snapshot_meta ORDER BY clock DESC LIMIT 1"
-        )
-        if row and row["clock"]:
-            now = datetime.now(UTC)
-            clock = row["clock"]
-            if clock.tzinfo is None:
-                # Assume UTC if naive
-                from datetime import timezone
-                clock = clock.replace(tzinfo=timezone.utc)
-            staleness = (now - clock).total_seconds()
-            return int(staleness)
-    except Exception:
-        pass
-    return None
-
+# ── Routes ──────────────────────────────────────────────────────────────
 
 @router.get("/status")
 async def get_status(conn=Depends(get_db)):
-    """
-    Get current simulation state.
-
-    Returns hybrid status: Jobs API (primary) + staleness check (fallback).
-    """
-    # Get job ID (from env var or lookup by name)
+    if not _jobs_mode():
+        return await _realtime_status(conn)
     simulate_job_id = await _get_job_id(SIMULATE_JOB_NAME, SIMULATE_JOB_ID)
     if not simulate_job_id:
-        return {
-            "error": "Simulate job not found. Set SIMULATE_JOB_ID env var in app.yaml.",
-            "is_running": False,
-        }
-
-    # Check for active run (definitive source)
+        return {"error": "Simulate job not found.", "is_running": False}
     active_run = await _get_active_run(simulate_job_id)
     if active_run:
-        return {
-            "is_running": True,
-            "run_id": active_run["run_id"],
-            "state": active_run["state"],
-            "message": active_run["state_message"],
-        }
-
-    # Fallback: check staleness
-    staleness = await _get_snapshot_staleness(conn)
+        return {"is_running": True, "run_id": active_run["run_id"],
+                "state": active_run["state"], "message": active_run["state_message"]}
+    staleness = await _staleness_seconds(conn)
     if staleness is not None and staleness < 30:
-        # Data is fresh, simulation likely running but Jobs API didn't find it
-        return {
-            "is_running": True,
-            "run_id": None,
-            "state": "RUNNING",
-            "staleness_seconds": staleness,
-            "message": "Running (detected via staleness check)",
-        }
-
-    return {
-        "is_running": False,
-        "run_id": None,
-        "state": "TERMINATED",
-        "staleness_seconds": staleness,
-    }
+        return {"is_running": True, "run_id": None, "state": "RUNNING",
+                "staleness_seconds": int(staleness), "message": "Running (staleness)"}
+    return {"is_running": False, "run_id": None, "state": "TERMINATED",
+            "staleness_seconds": int(staleness) if staleness is not None else None}
 
 
 @router.post("/start")
-async def start_simulation():
-    """Start simulation if not running."""
-    # Get job ID (from env var or lookup by name)
+async def start_simulation(conn=Depends(get_db)):
+    if not _jobs_mode():
+        return {"success": True, "mode": "realtime",
+                "message": "Realtime mode — data flows in from ingestion. Use Seed & Start to load demo data."}
+    from config import get_workspace_client
     simulate_job_id = await _get_job_id(SIMULATE_JOB_NAME, SIMULATE_JOB_ID)
     if not simulate_job_id:
-        raise HTTPException(
-            status_code=404,
-            detail="Simulate job not found. Set SIMULATE_JOB_ID env var in app.yaml.",
-        )
-
-    # Check if already running
-    active_run = await _get_active_run(simulate_job_id)
-    if active_run:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Simulation already running (run_id={active_run['run_id']})",
-        )
-
-    # Submit new run
-    w = get_workspace_client()
-    run = w.jobs.run_now(job_id=simulate_job_id)
-
-    return {
-        "success": True,
-        "run_id": run.run_id,
-        "message": "Simulation started (cluster starting, ~2 min)",
-    }
+        raise HTTPException(status_code=404, detail="Simulate job not found.")
+    if await _get_active_run(simulate_job_id):
+        raise HTTPException(status_code=400, detail="Simulation already running")
+    run = get_workspace_client().jobs.run_now(job_id=simulate_job_id)
+    return {"success": True, "run_id": run.run_id, "message": "Simulation started"}
 
 
 @router.post("/stop")
-async def stop_simulation():
-    """Stop running simulation."""
-    # Get job ID (from env var or lookup by name)
+async def stop_simulation(conn=Depends(get_db)):
+    if not _jobs_mode():
+        return {"success": True, "mode": "realtime", "message": "Realtime mode — nothing to stop."}
+    from config import get_workspace_client
     simulate_job_id = await _get_job_id(SIMULATE_JOB_NAME, SIMULATE_JOB_ID)
     if not simulate_job_id:
-        raise HTTPException(
-            status_code=404,
-            detail="Simulate job not found. Set SIMULATE_JOB_ID env var in app.yaml.",
-        )
-
-    # Find active run
+        raise HTTPException(status_code=404, detail="Simulate job not found.")
     active_run = await _get_active_run(simulate_job_id)
     if not active_run:
-        raise HTTPException(
-            status_code=400,
-            detail="Simulation is not running",
-        )
-
-    # Cancel run
-    w = get_workspace_client()
-    w.jobs.cancel_run(run_id=active_run["run_id"])
-
-    return {
-        "success": True,
-        "run_id": active_run["run_id"],
-        "message": "Simulation stopped",
-    }
+        raise HTTPException(status_code=400, detail="Simulation is not running")
+    get_workspace_client().jobs.cancel_run(run_id=active_run["run_id"])
+    return {"success": True, "run_id": active_run["run_id"], "message": "Simulation stopped"}
 
 
 @router.post("/seed")
 async def seed_and_restart(conn=Depends(get_db)):
-    """
-    3-step orchestrated seed operation:
-    1. Cancel active simulate job (if running)
-    2. Submit seed job → poll until TERMINATED
-    3. Submit simulate job to restart
+    if not _jobs_mode():
+        return await _realtime_seed(conn)
 
-    This endpoint blocks for ~30-90s until seed completes.
-    """
+    from config import get_workspace_client
     w = get_workspace_client()
-
-    # Get job IDs (from env vars or lookup by name)
     seed_job_id = await _get_job_id(SEED_JOB_NAME, SEED_JOB_ID)
     simulate_job_id = await _get_job_id(SIMULATE_JOB_NAME, SIMULATE_JOB_ID)
-
     if not seed_job_id or not simulate_job_id:
-        raise HTTPException(
-            status_code=404,
-            detail="Jobs not found. Set SEED_JOB_ID and SIMULATE_JOB_ID env vars in app.yaml.",
-        )
-
-    # Step 1: Stop simulation if running
+        raise HTTPException(status_code=404, detail="Jobs not found.")
     active_run = await _get_active_run(simulate_job_id)
     if active_run:
         w.jobs.cancel_run(run_id=active_run["run_id"])
-        await asyncio.sleep(5)  # Give it time to stop
-
-    # Step 2: Submit seed job and poll
+        await asyncio.sleep(5)
     seed_run = w.jobs.run_now(job_id=seed_job_id)
     seed_run_id = seed_run.run_id
-
-    start_time = time.time()
+    start = time.time()
     while True:
-        # Check timeout
-        elapsed = time.time() - start_time
-        if elapsed > SEED_TIMEOUT_SEC:
-            raise HTTPException(
-                status_code=408,
-                detail=f"Seed timeout (>{SEED_TIMEOUT_SEC}s)",
-            )
-
-        # Poll run state
+        if time.time() - start > SEED_TIMEOUT_SEC:
+            raise HTTPException(status_code=408, detail=f"Seed timeout (>{SEED_TIMEOUT_SEC}s)")
         run_state = w.jobs.get_run(seed_run_id)
         state = run_state.state.life_cycle_state.value if run_state.state and run_state.state.life_cycle_state else None
-
         if state == "TERMINATED":
-            # Check if successful
             result_state = run_state.state.result_state.value if run_state.state and run_state.state.result_state else None
             if result_state != "SUCCESS":
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Seed failed with state: {result_state}",
-                )
+                raise HTTPException(status_code=500, detail=f"Seed failed: {result_state}")
             break
-
-        # Continue polling
         await asyncio.sleep(SEED_POLL_INTERVAL_SEC)
-
-    # Step 3: Restart simulation
     simulate_run = w.jobs.run_now(job_id=simulate_job_id)
-
-    return {
-        "success": True,
-        "message": "Seed complete, simulation restarted",
-        "seed_run_id": seed_run_id,
-        "simulate_run_id": simulate_run.run_id,
-    }
+    return {"success": True, "message": "Seed complete, simulation restarted",
+            "seed_run_id": seed_run_id, "simulate_run_id": simulate_run.run_id}

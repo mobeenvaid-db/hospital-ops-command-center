@@ -48,14 +48,16 @@ app.include_router(assistant_router)
 app.include_router(agent_router)
 app.include_router(ingest_router)
 
-# Simulation control plane is demo-only. In a real deployment data comes from
-# the ingestion pipeline, so these routes are mounted only when explicitly
-# enabled (ENABLE_SIMULATION=true).
-if ENABLE_SIMULATION:
-    from control_routes import router as control_router
-    from lifecycle_routes import router as lifecycle_router
-    app.include_router(control_router)
-    app.include_router(lifecycle_router)
+# lifecycle + control are always mounted so the prebuilt frontend's status
+# pings never fall through to the SPA catch-all (which would return HTML).
+# They are realtime-aware: the simulator (seed/simulate jobs, surge/speed) is
+# only driven when ENABLE_SIMULATION=true AND the job ids are set; otherwise
+# they report realtime mode. The simulation UI itself is removed from the
+# frontend bundle in realtime builds.
+from control_routes import router as control_router
+from lifecycle_routes import router as lifecycle_router
+app.include_router(control_router)
+app.include_router(lifecycle_router)
 
 
 # ── Error handling ─────────────────────────────────────────────────────
@@ -410,6 +412,13 @@ if _static_dir.exists():
     # Serve remaining static files (favicon, etc.) but NOT as SPA catch-all
     app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static-root")
 
+    # No-cache headers for index.html so redeploys (e.g. a repatched bundle)
+    # are always picked up. Hashed /assets/* are safe to cache long-term.
+    _NO_CACHE = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+
+    def _index_response():
+        return FileResponse(str(_static_dir / "index.html"), headers=_NO_CACHE)
+
     # SPA catch-all: return index.html for any non-API, non-asset route
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
@@ -419,7 +428,7 @@ if _static_dir.exists():
         try:
             file_path.relative_to(static_root)
         except ValueError:
-            return FileResponse(str(_static_dir / "index.html"))
+            return _index_response()
         if file_path.exists() and file_path.is_file():
             return FileResponse(str(file_path))
-        return FileResponse(str(_static_dir / "index.html"))
+        return _index_response()
