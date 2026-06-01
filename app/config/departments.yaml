@@ -1,0 +1,46 @@
+# ════════════════════════════════════════════════════════════════════
+# Department + bed master bootstrap
+#
+# jobs/bootstrap_schema.py reads this to seed the `departments` and `beds`
+# tables. This defines YOUR facility's physical layout. The dashboard keys
+# everything on dept_id, so these ids must match the targets in
+# config/location_map.yaml.
+#
+# beds: bootstrap generates `count` beds named "<bed_prefix>-001", "-002", ...
+# Set auto_create_beds: true in .env to also let ingestion create beds it sees
+# but that aren't pre-seeded here (handy when you don't have a clean bed master).
+# ════════════════════════════════════════════════════════════════════
+
+site_name: "General Hospital"   # shown in the dashboard header (SITE_NAME env overrides)
+
+departments:
+  - dept_id: ED
+    name: "Emergency Department"
+    floor: 1
+    bed_prefix: ED
+    count: 30
+  - dept_id: OR
+    name: "Operating Rooms"
+    floor: 1
+    bed_prefix: OR
+    count: 8          # OR "beds" == rooms; populated by the Scheduling feed, not ADT
+  - dept_id: ICU
+    name: "Intensive Care Unit"
+    floor: 2
+    bed_prefix: ICU
+    count: 20
+  - dept_id: TELE
+    name: "Telemetry"
+    floor: 3
+    bed_prefix: TELE
+    count: 24
+  - dept_id: MEDSURG
+    name: "Medical / Surgical"
+    floor: 3
+    bed_prefix: MS
+    count: 40
+  - dept_id: PEDS
+    name: "Pediatrics"
+    floor: 4
+    bed_prefix: PEDS
+    count: 16

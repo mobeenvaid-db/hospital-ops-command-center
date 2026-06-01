@@ -98,6 +98,23 @@ def test_fhir_discharge_status():
     assert e.event_time.isoformat().startswith("2026-06-04")
 
 
+def test_fhir_does_not_use_encounter_id_as_message_id():
+    """Regression: the encounter/visit id is stable across a stay, so it must
+    not be used as the idempotency key, or the discharge would be dropped as a
+    duplicate of the admit."""
+    admit = normalize(load("fhir_admit_bundle.json"))
+    discharge = normalize(load("fhir_discharge_bundle.json"))
+    assert admit.redox_message_id is None
+    assert discharge.redox_message_id is None
+    # but the encounter id is still captured for linking
+    assert admit.encounter_id == "enc-2001"
+
+
+def test_redox_carries_message_id():
+    """Redox Data Model messages do carry a per-message id (Meta.Message.ID)."""
+    assert redox_datamodel.parse(load("redox_02_admit.json")).redox_message_id == "1002"
+
+
 def test_fhir_r4_class_coding():
     """R4 represents Encounter.class as a single Coding (not a list)."""
     payload = load("fhir_admit_bundle.json")

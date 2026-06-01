@@ -1,0 +1,52 @@
+# ════════════════════════════════════════════════════════════════════
+# Location -> department mapping
+#
+# EHRs emit unit/department names that are local to the facility ("4 WEST",
+# "MICU", "EMER DEPT"). The dashboard keys on canonical dept_ids
+# (ED/ICU/TELE/MEDSURG/PEDS/OR). This file is the translation table.
+#
+# Matching is case-insensitive and checks, in order:
+#   1. exact match of the normalized source value against a `match` entry
+#   2. substring/keyword match against `contains`
+#   3. the `default` fallback
+#
+# The "source value" the mapper looks at is, in priority order:
+#   • Redox Data Model:  Visit.Location.Department, then .Facility
+#   • FHIR:              Encounter.location[].location.display / Location.name,
+#                        and Location.physicalType
+#
+# bed_id: if the EHR sends a specific room/bed (Visit.Location.Room/Bed,
+# or FHIR Location of physicalType "bd"), the mapper uses it verbatim as the
+# bed_id. Otherwise, with auto_create_beds, it allocates the next free bed in
+# the resolved department.
+# ════════════════════════════════════════════════════════════════════
+
+# patient_class -> dept_id when no location is present (e.g. an ED arrival
+# before a bed is assigned). Redox: Visit.PatientClass; FHIR: Encounter.class.
+class_defaults:
+  emergency: ED
+  inpatient: MEDSURG
+  observation: MEDSURG
+  outpatient: MEDSURG
+
+default: MEDSURG   # last-resort dept when nothing else matches
+
+rules:
+  - dept_id: ED
+    match: ["ED", "EMERGENCY", "EMER DEPT", "EMERGENCY DEPARTMENT"]
+    contains: ["EMERG", "ED "]
+  - dept_id: ICU
+    match: ["ICU", "MICU", "SICU", "CCU"]
+    contains: ["INTENSIVE", "ICU", "CRITICAL CARE"]
+  - dept_id: TELE
+    match: ["TELE", "TELEMETRY", "PCU"]
+    contains: ["TELE", "TELEMETRY", "PROGRESSIVE"]
+  - dept_id: PEDS
+    match: ["PEDS", "PEDIATRICS", "PICU"]
+    contains: ["PED", "CHILD"]
+  - dept_id: OR
+    match: ["OR", "SURGERY", "OPERATING ROOM", "PERIOP"]
+    contains: ["SURG", "OPERAT", "PERIOP"]
+  - dept_id: MEDSURG
+    match: ["MEDSURG", "MED SURG", "MED/SURG", "4 WEST", "4 EAST", "5 WEST", "5 EAST"]
+    contains: ["MED", "SURG", "FLOOR", "WEST", "EAST"]

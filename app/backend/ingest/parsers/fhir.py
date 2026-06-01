@@ -215,22 +215,27 @@ def parse(payload: dict) -> AdtEvent:
     else:
         event_time = parse_dt(period.get("start")) or now_utc()
 
-    msg_id = None
+    visit_id = None
     for ident in encounter.get("identifier") or []:
-        msg_id = clean(ident.get("value"))
-        if msg_id:
+        visit_id = clean(ident.get("value"))
+        if visit_id:
             break
 
+    # NOTE: do NOT use the encounter/visit identifier as the idempotency key.
+    # It is stable across the whole stay (admit and discharge share it), so it
+    # is an encounter id, not a per-message id. Idempotency for FHIR comes from
+    # a per-delivery header when present (see redox_routes); otherwise it is
+    # disabled and the applier's state-idempotency handles re-delivery.
     return AdtEvent(
         event_type=event_type,
         event_time=event_time,
         patient=_patient_rec(patient, event_time),
-        encounter_id=clean(encounter.get("id")) or msg_id,
+        encounter_id=clean(encounter.get("id")) or visit_id,
         patient_class=_patient_class(encounter),
         esi_level=_esi(encounter),
         location=_location(encounter, index),
         source_format="fhir",
         data_model="Encounter",
         source_event_label=status,
-        redox_message_id=msg_id,
+        redox_message_id=None,
     )

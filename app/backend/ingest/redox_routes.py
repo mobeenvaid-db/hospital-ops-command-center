@@ -82,17 +82,22 @@ async def redox_ingest(request: Request, conn=Depends(db.get_db)):
     except json.JSONDecodeError as e:
         return JSONResponse({"error": f"invalid JSON: {e}"}, status_code=400)
 
+    # A per-delivery message id (when the sender provides one as a header) is a
+    # reliable idempotency key. Redox includes a delivery/message id header.
+    h = {k.lower(): v for k, v in request.headers.items()}
+    header_msg_id = h.get("redox-message-id") or h.get("x-redox-message-id") or h.get("x-message-id")
+
     # Redox sends one message per POST, but tolerate a list.
     messages = body if isinstance(body, list) else [body]
     results = []
     for msg in messages:
-        results.append(await _handle_one(conn, msg))
+        results.append(await _handle_one(conn, msg, header_msg_id))
 
     applied = sum(1 for r in results if r.get("status") == "applied")
     return {"received": len(messages), "applied": applied, "results": results}
 
 
-async def _handle_one(conn: Any, payload: dict) -> dict:
+async def _handle_one(conn: Any, payload: dict, header_msg_id: str | None = None) -> dict:
     fmt = detect_format(payload)
     bronze = get_bronze_sink()
     ingest_id = uuid.uuid4().hex
@@ -106,7 +111,10 @@ async def _handle_one(conn: Any, payload: dict) -> dict:
         await _log_ingest(conn, None, fmt, None, None, "error", str(e))
         return {"status": "error", "detail": str(e)}
 
-    msg_id = event.redox_message_id
+    # Idempotency key: payload-carried message id (Redox Data Model Meta.Message.ID)
+    # or a per-delivery header. NOT the encounter/visit id, which is stable across
+    # a stay. When neither exists, dedup is skipped and state-idempotency applies.
+    msg_id = event.redox_message_id or header_msg_id
 
     # Idempotency: skip messages we've already applied.
     if msg_id:
