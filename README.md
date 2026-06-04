@@ -80,6 +80,44 @@ See [docs/REDOX_INTEGRATION.md](docs/REDOX_INTEGRATION.md) for the destination
 setup, the verification handshake, signature verification, and the full
 field-by-field mapping spec.
 
+## Adapt this to your environment
+
+Everything that ties the app to a specific hospital, EHR, or workspace is config,
+not code. To stand this up for a new site, work through this checklist. None of it
+requires touching the dashboard or the agents.
+
+1. **Site name.** Set `SITE_NAME` (env / `app.yaml`). It is the only place the
+   facility is named.
+2. **Bed master.** Copy `config/departments.example.yaml` to
+   `config/departments.yaml` and list your real units and bed counts. This seeds
+   the canonical bed inventory. Set `AUTO_CREATE_BEDS=true` to let beds appear from
+   ingest instead of pre-seeding.
+3. **Unit mapping.** Copy `config/location_map.example.yaml` to
+   `config/location_map.yaml` and map your EHR's unit / location codes to the
+   canonical departments. This is what turns "5E" or "MICU-A" into a department the
+   dashboard understands.
+4. **Serving schema.** `sql/ddl/lakebase_serving.sql` is the canonical Postgres
+   schema. Run `jobs/bootstrap_schema.py` to create and seed it. Change
+   `LAKEBASE_SCHEMA` if you want a different schema name.
+5. **Catalog and bronze.** Set `DELTA_CATALOG`, `DELTA_BRONZE_SCHEMA`, and
+   `WAREHOUSE_ID` in `app.yaml` for durable raw landing, or set `BRONZE_SINK=local`
+   / `none` to skip it.
+6. **Ingestion source.** Today the webhook accepts Redox Data Model and FHIR R4/R5.
+   To accept a different integration engine, add a parser under
+   `app/backend/ingest/parsers/` that emits the canonical `AdtEvent` and register it
+   in `normalize.py`. Nothing downstream of `AdtEvent` changes, the applier, serving
+   tables, dashboard, and copilot are source-agnostic.
+7. **Copilot model.** Set `SERVING_ENDPOINT` to any Foundation Model API chat
+   endpoint. No code change to swap models.
+8. **App config and secrets.** Copy `app/app.yaml.example` to `app/app.yaml`, fill
+   `PGUSER` with the app's service principal id, and store
+   `REDOX_VERIFICATION_TOKEN` / `REDOX_SIGNATURE_SECRET` as app secrets rather than
+   inline values.
+
+`app/app.yaml`, `.env`, `config/departments.yaml`, and `config/location_map.yaml`
+are git-ignored on purpose, so your workspace ids, service principal, and site
+layout never get committed. Commit only the `.example` templates.
+
 ## Repo layout
 
 ```
