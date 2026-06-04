@@ -14,7 +14,7 @@ from fastapi import FastAPI, Depends, Query, HTTPException
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from starlette.responses import FileResponse
+from starlette.responses import FileResponse, HTMLResponse
 
 import db
 import queries
@@ -424,8 +424,20 @@ if _static_dir.exists():
     # are always picked up. Hashed /assets/* are safe to cache long-term.
     _NO_CACHE = {"Cache-Control": "no-cache, no-store, must-revalidate"}
 
+    # The built bundle hides the Simulation Control button via injected CSS so
+    # it never shows in realtime mode. In simulation mode we strip that rule so
+    # the demo controls (Seed & Start, Start/Stop, presets) are available.
+    _HIDE_SIM_CSS = (
+        '<style>button[aria-label="Open Simulation Control"]'
+        '{display:none !important}</style>'
+    )
+    _INDEX_HTML = (_static_dir / "index.html").read_text(encoding="utf-8")
+
     def _index_response():
-        return FileResponse(str(_static_dir / "index.html"), headers=_NO_CACHE)
+        html = _INDEX_HTML
+        if ENABLE_SIMULATION:
+            html = html.replace(_HIDE_SIM_CSS, "")
+        return HTMLResponse(content=html, headers=_NO_CACHE)
 
     # SPA catch-all: return index.html for any non-API, non-asset route
     @app.get("/{full_path:path}")

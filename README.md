@@ -85,7 +85,9 @@ python jobs/bootstrap_schema.py
 open http://localhost:8000
 ```
 
-The dashboard's controls drive the simulator directly:
+In simulation mode the **Simulation Control** panel (the floating control on the
+dashboard) is shown; in realtime mode it stays hidden. Its controls drive the
+simulator directly:
 
 - **Seed & Start** reloads a clean census.
 - **Start / Stop** resume and pause the generator.
