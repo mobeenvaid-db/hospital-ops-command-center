@@ -45,8 +45,11 @@ env:
     value: "databricks-claude-sonnet-4-5"
 
   # ── Mode ──
+  # "false" = realtime (data only from the Redox webhook).
+  # "true"  = built-in synthetic ADT simulator: a live, moving census with no
+  #           Redox feed and no external jobs. Use for a self-contained demo.
   - name: ENABLE_SIMULATION
-    value: "false"                          # realtime; set "true" only for the synthetic demo
+    value: "false"
   - name: SITE_NAME
     value: "General Hospital"
 

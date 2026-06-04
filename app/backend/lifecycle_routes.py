@@ -40,6 +40,12 @@ def _jobs_mode() -> bool:
     return bool(ENABLE_SIMULATION and SEED_JOB_ID and SIMULATE_JOB_ID)
 
 
+def _insim_mode() -> bool:
+    """In-process simulator: ENABLE_SIMULATION on, but no external seed/simulate
+    jobs configured. This is the portable demo path (no Redox, no Databricks jobs)."""
+    return bool(ENABLE_SIMULATION and not (SEED_JOB_ID and SIMULATE_JOB_ID))
+
+
 async def _staleness_seconds(conn) -> Optional[float]:
     if conn is None:
         return None
@@ -50,6 +56,49 @@ async def _staleness_seconds(conn) -> Optional[float]:
         return float(val) if val is not None else None
     except Exception:
         return None
+
+
+# ── In-process simulation handlers (portable demo) ──────────────────────
+
+async def _insim_status(conn):
+    from simulator import simulator
+    staleness = await _staleness_seconds(conn)
+    running = simulator.is_running
+    return {
+        "is_running": running,
+        "run_id": None,
+        "state": "RUNNING" if running else "PAUSED",
+        "staleness_seconds": int(staleness) if staleness is not None else None,
+        "mode": "simulation",
+        "message": "Simulation running — synthetic ADT feed"
+                   if running else "Simulation paused — click Start to resume",
+    }
+
+
+async def _insim_start(conn):
+    from simulator import simulator
+    simulator.resume()
+    return {"success": True, "mode": "simulation", "is_running": True,
+            "message": "Simulation resumed"}
+
+
+async def _insim_stop(conn):
+    from simulator import simulator
+    simulator.pause()
+    return {"success": True, "mode": "simulation", "is_running": False,
+            "message": "Simulation paused"}
+
+
+async def _insim_seed(conn):
+    from simulator import simulator
+    summary = await _realtime_seed(conn)   # clean census now, through the applier
+    simulator.resume()                     # make sure the loop is live afterward
+    summary["mode"] = "simulation"
+    summary["message"] = (
+        f"Census reseeded: {summary.get('patients_admitted', 0)} inpatients, "
+        f"{summary.get('ed_waiting', 0)} in the ED — simulation running"
+    )
+    return summary
 
 
 # ── Realtime (default) handlers ─────────────────────────────────────────
@@ -117,6 +166,8 @@ async def _get_active_run(job_id):
 
 @router.get("/status")
 async def get_status(conn=Depends(get_db)):
+    if _insim_mode():
+        return await _insim_status(conn)
     if not _jobs_mode():
         return await _realtime_status(conn)
     simulate_job_id = await _get_job_id(SIMULATE_JOB_NAME, SIMULATE_JOB_ID)
@@ -136,6 +187,8 @@ async def get_status(conn=Depends(get_db)):
 
 @router.post("/start")
 async def start_simulation(conn=Depends(get_db)):
+    if _insim_mode():
+        return await _insim_start(conn)
     if not _jobs_mode():
         return {"success": True, "mode": "realtime",
                 "message": "Realtime mode — data flows in from ingestion. Use Seed & Start to load demo data."}
@@ -151,6 +204,8 @@ async def start_simulation(conn=Depends(get_db)):
 
 @router.post("/stop")
 async def stop_simulation(conn=Depends(get_db)):
+    if _insim_mode():
+        return await _insim_stop(conn)
     if not _jobs_mode():
         return {"success": True, "mode": "realtime", "message": "Realtime mode — nothing to stop."}
     from config import get_workspace_client
@@ -166,6 +221,8 @@ async def stop_simulation(conn=Depends(get_db)):
 
 @router.post("/seed")
 async def seed_and_restart(conn=Depends(get_db)):
+    if _insim_mode():
+        return await _insim_seed(conn)
     if not _jobs_mode():
         return await _realtime_seed(conn)
 

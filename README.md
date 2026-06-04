@@ -18,7 +18,7 @@ them into the serving tables the dashboard reads.
 | Schema | Created by an external seed job (not in repo) | Canonical DDL in `sql/ddl` |
 | Config | Hardcoded job IDs and service principal | Env driven, `app.yaml.example` and `.env.example` |
 | Raw data | None | Durable Delta bronze landing with replay |
-| Simulator | Always on | Off by default, behind `ENABLE_SIMULATION` |
+| Simulator | Always on (external Databricks jobs) | In-process, off by default, behind `ENABLE_SIMULATION` (no jobs needed) |
 | Predictions | Simulator wrote them | Optional analytics job over real data |
 
 ## How it works
@@ -67,6 +67,42 @@ real parsers, applier, and dashboard queries against Postgres):
 ```bash
 PGDATABASE=hospital_ops python scripts/verify_e2e.py
 ```
+
+## Run as a live demo (simulation mode)
+
+For a self-contained demo with no Redox feed and no external jobs, set
+`ENABLE_SIMULATION=true`. The app then runs a built-in synthetic ADT generator
+in-process. It seeds a realistic census on startup and keeps it moving:
+new ED arrivals, admits to beds, transfers, and discharges flow continuously
+through the SAME applier the webhook uses, so the dashboard updates live and the
+copilot answers against real-looking state.
+
+```bash
+cp .env.example .env
+# in .env, set: ENABLE_SIMULATION=true
+python jobs/bootstrap_schema.py
+./scripts/run_local.sh &
+open http://localhost:8000
+```
+
+The dashboard's controls drive the simulator directly:
+
+- **Seed & Start** reloads a clean census.
+- **Start / Stop** resume and pause the generator.
+- **Fast Forward / ED Surge / Peak Hour** presets adjust the rate and time of day.
+  These post to `/api/control`, which the simulator reads each cycle.
+
+The arrival rate, acuity mix, admission probability, and discharge timing all
+come from the research-calibrated constants in `app/backend/lib/constants.py`,
+so the synthetic stream behaves like a real community hospital. The generator
+self-balances around each unit's target occupancy, so the board stays busy but
+does not run away. Set `ENABLE_SIMULATION=false` (the default) to return to
+realtime mode, where data arrives only from the ingest webhook.
+
+> The original demo simulator ran as external Databricks Jobs. If you set both
+> `SEED_JOB_ID` and `SIMULATE_JOB_ID` (with `ENABLE_SIMULATION=true`), the
+> lifecycle controls drive those jobs instead. With no job ids set, the portable
+> in-process simulator above is used.
 
 ## Deploy to Databricks
 

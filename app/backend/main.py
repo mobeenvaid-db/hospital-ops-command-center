@@ -29,7 +29,15 @@ from lib.anomaly import compute_system_status
 async def lifespan(app: FastAPI):
     # Start token refresh loop (no-op locally, runs in background for Databricks Apps)
     refresh_task = asyncio.create_task(db.db_pool.start_token_refresh_loop())
+    # In simulation mode, run the in-process ADT generator so the dashboard shows
+    # live, moving data with no Redox feed and no external jobs. Off by default.
+    if ENABLE_SIMULATION:
+        from simulator import simulator
+        await simulator.start(SCHEMA)
     yield
+    if ENABLE_SIMULATION:
+        from simulator import simulator
+        await simulator.stop()
     refresh_task.cancel()
     await db.db_pool.close()
 
